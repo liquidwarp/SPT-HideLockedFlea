@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <Authors>Liquidwarp</Authors>
+        <ModGuidPrefix>net.liquidwarp</ModGuidPrefix>
+        <Product>$(MSBuildProjectName)</Product>
+        <RootNamespace>$(Authors).$(MSBuildProjectName)</RootNamespace>
+        <AssemblyName>$(Authors)-$(MSBuildProjectName)</AssemblyName>
+        <Version>1.0.0</Version>
+        <ServerSPTVersion>~4.1.6</ServerSPTVersion>
+        <SPTPackageVersion>4.1.6</SPTPackageVersion>
+        <ModGuid>$(ModGuidPrefix).$(MSBuildProjectName.ToLowerInvariant())</ModGuid>
+        <ServerModDir>SPT_Runtime\user\mods\$(AssemblyName)</ServerModDir>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+        <DebugType>None</DebugType>
+        <GenerateDependencyFile>false</GenerateDependencyFile>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="SPTushonka.Common" Version="$(SPTPackageVersion)" />
+        <PackageReference Include="SPTushonka.DI" Version="$(SPTPackageVersion)" />
+        <PackageReference Include="SPTushonka.Reflection" Version="$(SPTPackageVersion)" />
+        <PackageReference Include="SPTushonka.Server.Core" Version="$(SPTPackageVersion)" />
+    </ItemGroup>
+
+    <Target Name="GenerateMyModInfo" BeforeTargets="CoreCompile">
+        <PropertyGroup>
+            <MyModInfoFile>$(IntermediateOutputPath)MyModInfo.g.cs</MyModInfoFile>
+            <MyModInfoText><![CDATA[
+namespace $(RootNamespace)%3B
+
+internal static class MyModInfo
+{
+    public const string MOD_GUID = "$(ModGuid)"%3B
+    public const string MOD_NAME = "$(Product)"%3B
+    public const string MOD_AUTHOR = "$(Authors)"%3B
+    public const string MOD_VERSION = "$(Version)"%3B
+    public const string SERVER_SPT_VERSION = "$(ServerSPTVersion)"%3B
+}
+]]></MyModInfoText>
+        </PropertyGroup>
+        <WriteLinesToFile File="$(MyModInfoFile)" Lines="$(MyModInfoText)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+        <ItemGroup>
+            <Compile Include="$(MyModInfoFile)" />
+            <FileWrites Include="$(MyModInfoFile)" />
+        </ItemGroup>
+    </Target>
+
+    <Target Name="RequireSPTPath" BeforeTargets="Build" Condition="'$(InstallServerMod)' == 'True'">
+        <Error Condition="'$(SPTPath)' == ''" Text="Missing SPT path" />
+    </Target>
+
+    <Target Name="PostBuild" AfterTargets="PostBuildEvent" Condition="'$(InstallServerMod)' == 'True'">
+        <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(SPTPath)\$(ServerModDir)" />
+    </Target>
+
+    <Target Name="PackageRelease" AfterTargets="Build" Condition="'$(PackageRelease)' == 'True'">
+        <PropertyGroup>
+            <ReleaseDir>$(MSBuildProjectDirectory)\releases\$(AssemblyName)-$(Version)</ReleaseDir>
+        </PropertyGroup>
+        <RemoveDir Directories="$(ReleaseDir)" />
+        <Copy SourceFiles="$(TargetPath);LICENSE" DestinationFolder="$(ReleaseDir)\$(ServerModDir)" />
+        <ZipDirectory SourceDirectory="$(ReleaseDir)" DestinationFile="$(ReleaseDir).zip" Overwrite="true" />
+    </Target>
+</Project>

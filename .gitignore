@@ -1,9 +1,3 @@
-# Build output
-bin/
-obj/
-Releases/
-
-# IDE
-.vs/
-.idea/
-*.user
+bin
+obj
+releases
