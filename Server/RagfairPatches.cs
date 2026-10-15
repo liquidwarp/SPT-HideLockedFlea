@@ -13,10 +13,11 @@ using SPTarkov.Server.Core.Models.Eft.Common.Tables;
 using SPTarkov.Server.Core.Models.Eft.Ragfair;
 using SPTarkov.Server.Core.Services.Ragfair;
 
-namespace Liquidwarp.HideLockedFlea;
+namespace Liquidwarp.HideLockedFlea.Server;
 
 internal static class CurrentSearch
 {
+    [ThreadStatic] public static bool HideLocked;
     [ThreadStatic] public static TraderLocks? TraderLocks;
 }
 
@@ -50,8 +51,15 @@ public class GetOffersPatch : AbstractPatch
     protected override MethodBase GetTargetMethod() =>
         AccessTools.Method(typeof(RagfairController), nameof(RagfairController.GetOffers));
 
+    [PatchPrefix]
+    public static void Prefix(MongoId sessionID) => CurrentSearch.HideLocked = ProfileSettings.HideLocked(sessionID);
+
     [PatchFinalizer]
-    public static void Finalizer() => CurrentSearch.TraderLocks = null;
+    public static void Finalizer()
+    {
+        CurrentSearch.HideLocked = false;
+        CurrentSearch.TraderLocks = null;
+    }
 }
 
 [Injectable]
@@ -64,6 +72,9 @@ public class GetOffersForSearchTypePatch : AbstractPatch
     [PatchPostfix]
     public static void Postfix(Dictionary<MongoId, TraderAssort> traderAssorts, PmcData pmcProfile, List<RagfairOffer> __result)
     {
+        if (!CurrentSearch.HideLocked)
+            return;
+
         var traderLocks = CurrentSearch.TraderLocks = new TraderLocks(traderAssorts, pmcProfile);
         __result.RemoveAll(traderLocks.IsLocked);
     }

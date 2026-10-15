@@ -1,6 +1,6 @@
 ## What
 
-Server mod that hides flea market offers you can't buy yet.
+Client+server mod that hides flea market offers you can't buy yet.
 
 ## Why
 
@@ -11,6 +11,10 @@ This mod removes them from search results as returned by the server, so you only
 Exceptions that remain visible with this mod installed:
 - Items that have their stock exhausted (already bought the max limit today).
 - Items locked by tiered flea if it is enabled.
+
+## Settings
+
+A "Hide locked offers" checkbox in the flea market filters turns the hiding on and off. Works with "Remember selected" as per-view defaults.
 
 ## Installation
 

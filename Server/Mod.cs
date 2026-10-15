@@ -5,7 +5,7 @@ using SPTarkov.DI.Annotations;
 using SPTarkov.Reflection.Patching;
 using SPTarkov.Server.Core.DI;
 
-namespace Liquidwarp.HideLockedFlea;
+namespace Liquidwarp.HideLockedFlea.Server;
 
 [Injectable(TypePriority = OnLoadOrder.Preload + 1)]
 public class Mod(IEnumerable<IRuntimePatch> patches) : IOnLoad

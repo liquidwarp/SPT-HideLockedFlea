@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ModDir>SPT_Runtime\user\mods\$(Authors)-$(ModName)</ModDir>
+        <InstallMod Condition="'$(InstallServerMod)' == 'True'">True</InstallMod>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="SPTushonka.Reflection" Version="$(SPTPackageVersion)" />
+        <PackageReference Include="SPTushonka.Server.Core" Version="$(SPTPackageVersion)" />
+    </ItemGroup>
+</Project>

@@ -4,6 +4,10 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
 
+    [switch]$InstallMod,
+
+    [switch]$InstallClientMod,
+
     [switch]$InstallServerMod,
 
     [switch]$PackageRelease
@@ -15,5 +19,14 @@ if (-not (Test-Path "$SPTPath\EscapeFromTarkov_Data\Managed\Assembly-CSharp.dll"
     throw "SPT not found at '$SPTPath'"
 }
 
-dotnet build "$PSScriptRoot\HideLockedFlea.csproj" -c $Configuration -p:SPTPath="$SPTPath" -p:InstallServerMod=$($InstallServerMod.IsPresent) -p:PackageRelease=$($PackageRelease.IsPresent)
+$buildArgs = @(
+    "$PSScriptRoot\HideLockedFlea.slnx"
+    "-c", $Configuration
+    "-p:SPTPath=$SPTPath"
+    "-p:InstallClientMod=$($InstallMod -or $InstallClientMod)"
+    "-p:InstallServerMod=$($InstallMod -or $InstallServerMod)"
+    "-p:PackageRelease=$($PackageRelease.IsPresent)"
+    "-tlp:verbosity=detailed"
+)
+dotnet build @buildArgs
 if ($LASTEXITCODE -ne 0) { throw "dotnet build failed ($LASTEXITCODE)" }

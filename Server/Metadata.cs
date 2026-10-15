@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using SPTarkov.Server.Core.Models.Spt.Mod;
 
-namespace Liquidwarp.HideLockedFlea;
+namespace Liquidwarp.HideLockedFlea.Server;
 
 public record ModMetadata : IModMetadata
 {
