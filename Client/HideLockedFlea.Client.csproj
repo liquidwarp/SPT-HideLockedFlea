@@ -8,6 +8,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <InternalsVisibleTo Include="$(Authors)-HideLockedFlea.Tests" />
         <Reference Include="0Harmony">
             <HintPath>$(SPTPath)\BepInEx\core\0Harmony.dll</HintPath>
         </Reference>

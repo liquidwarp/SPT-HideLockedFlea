@@ -5,9 +5,7 @@ using EFT.UI;
 using EFT.UI.Ragfair;
 using HarmonyLib;
 using Newtonsoft.Json;
-using SPT.Common.Http;
 using SPT.Reflection.Patching;
-using UnityEngine;
 
 namespace Liquidwarp.HideLockedFlea.Client;
 
@@ -28,15 +26,11 @@ internal static class HideLockedSetting
         return changed;
     }
 
-    public static void SaveAsDefault(EViewListType view)
-    {
-        PlayerPrefs.SetInt(Key(view), Get(view) ? 1 : 0);
-        PlayerPrefs.Save();
-    }
+    public static void SaveAsDefault(EViewListType view) => FleaFilterServices.Current.SavePreference(Key(view), Get(view) ? 1 : 0);
 
     public static void ClearCurrent() => CurrentValues.Clear();
 
-    private static bool GetDefault(EViewListType view) => PlayerPrefs.GetInt(Key(view), DefaultValue ? 1 : 0) == 1;
+    private static bool GetDefault(EViewListType view) => FleaFilterServices.Current.ReadPreference(Key(view), DefaultValue ? 1 : 0) == 1;
 
     private static string Key(EViewListType view) => PlayerPrefsKeyPrefix + view;
 }
@@ -59,13 +53,13 @@ public class GetOffersPatch : ModulePatch
 
         try
         {
-            RequestHandler.PostJson("/hidelockedflea/settings", JsonConvert.SerializeObject(new { hideLocked }));
+            FleaFilterServices.Current.PostJson("/hidelockedflea/settings", JsonConvert.SerializeObject(new { hideLocked }));
             _sentHideLocked = hideLocked;
         }
         catch (Exception ex)
         {
             // Not remembered as sent, so the next search tries again.
-            Plugin.LogSource.LogWarning($"Failed to send the setting to the server: {ex.Message}");
+            FleaFilterServices.Current.LogWarning($"Failed to send the setting to the server: {ex.Message}");
         }
     }
 }
@@ -107,7 +101,7 @@ public class FilterWindowAwakePatch : ModulePatch
     [PatchPrefix]
     public static void Prefix(RagfairFilterWindow __instance, UpdatableToggle ____onlyFunctional, DefaultUIButton ____applyButton, DefaultUIButton ____resetButton)
     {
-        HideLockedToggle = DuplicateToggle(____onlyFunctional, "HideLocked", Label);
+        HideLockedToggle = FleaFilterServices.Current.DuplicateToggle(____onlyFunctional, "HideLocked", Label);
 
         ____applyButton.OnClick.AddListener(() => SetHideLocked(RagfairRef(__instance), HideLockedToggle.isOn));
         ____resetButton.OnClick.AddListener(() =>
@@ -116,17 +110,6 @@ public class FilterWindowAwakePatch : ModulePatch
             if (ragfair.FilterRule.ViewListType is EViewListType.AllOffers or EViewListType.WishList)
                 SetHideLocked(ragfair, HideLockedSetting.DefaultValue);
         });
-    }
-
-    private static UpdatableToggle DuplicateToggle(UpdatableToggle original, string name, string label)
-    {
-        var copy = UnityEngine.Object.Instantiate(original, original.transform.parent, false);
-        copy.name = name;
-        copy.transform.SetSiblingIndex(original.transform.GetSiblingIndex() + 1);
-
-        copy.GetComponentInChildren<LocalizedText>(true)?.LocalizationKey = label;
-
-        return copy;
     }
 
     private static void SetHideLocked(RagFair ragfair, bool hideLocked)

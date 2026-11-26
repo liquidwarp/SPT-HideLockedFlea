@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <IsTestProject>true</IsTestProject>
+        <IsPackable>false</IsPackable>
+        <GenerateDependencyFile>true</GenerateDependencyFile>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="../Client/HideLockedFlea.Client.csproj" />
+        <ProjectReference Include="../Server/HideLockedFlea.Server.csproj" />
+        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+        <PackageReference Include="NUnit" Version="4.3.2" />
+        <PackageReference Include="NUnit3TestAdapter" Version="5.0.0" />
+        <Reference Include="Assembly-CSharp">
+            <HintPath>$(SPTPath)/EscapeFromTarkov_Data/Managed/Assembly-CSharp.dll</HintPath>
+        </Reference>
+        <Reference Include="Sirenix.Serialization">
+            <HintPath>$(SPTPath)/EscapeFromTarkov_Data/Managed/Sirenix.Serialization.dll</HintPath>
+        </Reference>
+        <Reference Include="spt-reflection">
+            <HintPath>$(SPTPath)/BepInEx/plugins/spt/spt-reflection.dll</HintPath>
+        </Reference>
+        <Reference Include="UnityEngine.CoreModule">
+            <HintPath>$(SPTPath)/EscapeFromTarkov_Data/Managed/UnityEngine.CoreModule.dll</HintPath>
+        </Reference>
+        <Reference Include="UnityEngine.UI">
+            <HintPath>$(SPTPath)/EscapeFromTarkov_Data/Managed/UnityEngine.UI.dll</HintPath>
+        </Reference>
+    </ItemGroup>
+    <!-- Use the same model and flea search implementation that the game server loads. -->
+    <Target Name="UseInstalledServerCore" AfterTargets="Build">
+        <Copy SourceFiles="$(SPTPath)/SPT_Runtime/SPTarkov.Server.Core.dll" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    </Target>
+</Project>

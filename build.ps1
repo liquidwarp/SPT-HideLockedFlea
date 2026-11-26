@@ -10,7 +10,9 @@ param(
 
     [switch]$InstallServerMod,
 
-    [switch]$PackageRelease
+    [switch]$PackageRelease,
+
+    [switch]$Test
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,3 +32,8 @@ $buildArgs = @(
 )
 dotnet build @buildArgs
 if ($LASTEXITCODE -ne 0) { throw "dotnet build failed ($LASTEXITCODE)" }
+
+if ($Test) {
+    dotnet test "$PSScriptRoot\Tests\HideLockedFlea.Tests.csproj" -c $Configuration "-p:SPTPath=$SPTPath"
+    if ($LASTEXITCODE -ne 0) { throw "Mod tests failed ($LASTEXITCODE)" }
+}
