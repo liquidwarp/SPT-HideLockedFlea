@@ -14,6 +14,7 @@ public class Plugin : BaseUnityPlugin
         LogSource = Logger;
 
         new GetOffersPatch().Enable();
+        new FleaRequestPatch().Enable();
         new SaveRuleAsDefaultPatch().Enable();
         new ClearSavedFiltersPatch().Enable();
         new FilterWindowAwakePatch().Enable();

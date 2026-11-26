@@ -1,9 +1,10 @@
 using System.Runtime.CompilerServices;
-using System.Text.Json;
+using EFT;
 using EFT.UI;
 using EFT.UI.Ragfair;
 using HarmonyLib;
 using Liquidwarp.HideLockedFlea.Server.Tests;
+using Microsoft.AspNetCore.Http;
 using NUnit.Framework;
 using SPTarkov.Server.Core.Models.Enums;
 using UnityEngine.Events;
@@ -17,31 +18,17 @@ public class FilterSettingsTests
     private sealed class TestServices : FleaFilterServices
     {
         public readonly Dictionary<string, int> Preferences = [];
-        public readonly List<(string Url, string Json)> Requests = [];
-        public readonly List<string> Warnings = [];
-        public bool RejectNextPost;
         public UpdatableToggle? Template;
         public string? Label;
 
         public override int ReadPreference(string key, int fallback) => Preferences.GetValueOrDefault(key, fallback);
         public override void SavePreference(string key, int value) => Preferences[key] = value;
-        public override void LogWarning(string message) => Warnings.Add(message);
 
         public override UpdatableToggle DuplicateToggle(UpdatableToggle original, string name, string label)
         {
             Template = original;
             Label = label;
             return ManagedControl<UpdatableToggle>();
-        }
-
-        public override void PostJson(string url, string json)
-        {
-            Requests.Add((url, json));
-            if (RejectNextPost)
-            {
-                RejectNextPost = false;
-                throw new IOException("Test connection failed");
-            }
         }
     }
 
@@ -51,6 +38,16 @@ public class FilterSettingsTests
     private readonly DefaultUIButton _apply = Button();
     private readonly DefaultUIButton _reset = Button();
     private FleaFilterServices _original = null!;
+    private static readonly Harmony RequestBuilder = new("net.liquidwarp.hidelockedflea.tests.requests");
+    private static BackendRequestParams? _outgoingRequest;
+
+    [OneTimeSetUp]
+    public static void PatchRequestBuilder() => RequestBuilder.Patch(
+        AccessTools.Method(typeof(BackendRequestParams), nameof(BackendRequestParams.CreateFromLegacyParams)),
+        postfix: new HarmonyMethod(typeof(FleaRequestPatch), nameof(FleaRequestPatch.Postfix)));
+
+    [OneTimeTearDown]
+    public static void UnpatchRequestBuilder() => RequestBuilder.UnpatchSelf();
 
     [SetUp]
     public void SetUp()
@@ -99,7 +96,21 @@ public class FilterSettingsTests
         _apply.OnClick.Invoke();
     }
 
-    private static void Search(EViewListType view) => GetOffersPatch.Prefix(new FilterRule { ViewListType = view });
+    private static BackendRequestParams Request(string path) =>
+        BackendRequestParams.CreateFromLegacyParams(new SendRequest { Url = "https://eft.test" + path });
+
+    private static BackendRequestParams Search(EViewListType view)
+    {
+        GetOffersPatch.Prefix(new FilterRule { ViewListType = view }, out var previous);
+        try
+        {
+            return Request("/client/ragfair/find");
+        }
+        finally
+        {
+            GetOffersPatch.Finalizer(previous);
+        }
+    }
 
     [Test]
     public void ReopeningTheWindowDisplaysTheCurrentViewAndButtonsActOnThatView()
@@ -177,96 +188,191 @@ public class FilterSettingsTests
     [TestCase(EViewListType.AllOffers, true)]
     [TestCase(EViewListType.WishList, true)]
     [TestCase(EViewListType.MyOffers, false)]
-    [TestCase(EViewListType.Handbook, false)]
     [TestCase(EViewListType.WeaponBuild, false)]
-    [TestCase(EViewListType.RequirementsWindow, false)]
-    public void ResetUsesTheGameViewsDefaultWithoutOverwritingRememberedChoices(EViewListType view, bool supportsReset)
+    public void NativeResetUpdatesTheRememberedDefaultForTheViewsEftResets(EViewListType view, bool resets)
     {
         var flea = OpenView(view);
         Apply(true);
         SaveRuleAsDefaultPatch.Postfix(flea);
         flea.ForceNextUpdate = false;
 
-        _reset.OnClick.Invoke();
+        // EFT registers this listener in Awake, after the mod's prefix. Bypass the scene
+        // refresh, native PlayerPrefs and window closing, but run EFT's actual reset decision.
+        var nativeReset = AccessTools.Method(typeof(RagfairFilterWindow), "CG_Awake1").CreateDelegate<UnityAction>(_window);
+        // UnityEvent skips scene objects without a native handle. Give it a managed listener.
+        _reset.OnClick.AddListener(() => nativeReset());
+        var scene = new Harmony("net.liquidwarp.hidelockedflea.tests.reset");
+        var skip = new HarmonyMethod(typeof(FilterSettingsTests), nameof(SkipSceneOperation));
+        try
+        {
+            scene.Patch(AccessTools.Method(typeof(RagFair), nameof(RagFair.AddSearchesInRule)), prefix: skip);
+            scene.Patch(AccessTools.Method(typeof(RagFair), nameof(RagFair.SaveRuleAsDefault)), prefix: skip,
+                postfix: new HarmonyMethod(typeof(SaveRuleAsDefaultPatch), nameof(SaveRuleAsDefaultPatch.Postfix)));
+            scene.Patch(AccessTools.DeclaredMethod(typeof(UIElement), nameof(UIElement.Close)), prefix: skip);
+            _reset.OnClick.Invoke();
+        }
+        finally
+        {
+            scene.UnpatchSelf();
+        }
 
-        Assert.That(HideLockedSetting.Get(view), Is.EqualTo(!supportsReset));
-        Assert.That(flea.ForceNextUpdate, Is.EqualTo(supportsReset));
+        Assert.That(HideLockedSetting.Get(view), Is.EqualTo(!resets), "current choice after Reset");
+        Assert.That(flea.ForceNextUpdate, Is.EqualTo(resets));
         ClearSavedFiltersPatch.Postfix();
+        Assert.That(HideLockedSetting.Get(view), Is.EqualTo(!resets), "remembered choice after reloading");
+    }
+
+    private static bool SkipSceneOperation() => false;
+
+    [TestCase(EViewListType.Handbook)]
+    [TestCase(EViewListType.RequirementsWindow)]
+    public void ModResetListenerLeavesViewsWithoutAResetButtonAlone(EViewListType view)
+    {
+        var flea = OpenView(view);
+        Apply(true);
+        flea.ForceNextUpdate = false;
+        _reset.OnClick.Invoke();
         Assert.That(HideLockedSetting.Get(view), Is.True);
+        Assert.That(flea.ForceNextUpdate, Is.False);
+    }
+
+    [TestCase(false, true)]
+    [TestCase(true, false)]
+    public void ExactIdUsesAllOffersEvenBeforeTheFirstSearchAndAfterAWishlistSearch(bool all, bool wish)
+    {
+        _services.Preferences["Liquidwarp.HideLockedFlea.DefaultFilterRule_AllOffers"] = all ? 1 : 0;
+        OpenView(EViewListType.WishList);
+        Apply(wish);
+        var session = BackendSession();
+        var transport = new Harmony("net.liquidwarp.hidelockedflea.tests.lookup");
+        var expected = "/client/ragfair/offer/findbyid" + (all ? "?hideLockedFlea=1" : "?hideLockedFlea=0");
+        try
+        {
+            InterceptTransport<Offer>(transport);
+            session.FindById(71, _ => { });
+            Assert.That(_outgoingRequest?.BackendMethod, Is.EqualTo(expected));
+            _outgoingRequest = null;
+            Assert.That(Search(EViewListType.WishList).BackendMethod, Does.EndWith(wish ? "=1" : "=0"));
+            session.FindById(72, _ => { });
+            Assert.That(_outgoingRequest?.BackendMethod, Is.EqualTo(expected));
+        }
+        finally
+        {
+            transport.UnpatchSelf();
+            _outgoingRequest = null;
+        }
+    }
+
+    private static EftClientBackendSession BackendSession()
+    {
+        var session = ManagedControl<EftClientBackendSession>();
+        AccessTools.Field(typeof(ClientBackendSession), "_backendUrls")
+            .SetValue(session, new JsonType.BackendUrls { RagFair = "https://eft.test" });
+        return session;
+    }
+
+    private static void InterceptTransport<T>(Harmony transport)
+    {
+        var send = AccessTools.Method(typeof(Backend), nameof(Backend.Send), [typeof(BackendRequestParams)], [typeof(T)]);
+        var capture = AccessTools.Method(typeof(FilterSettingsTests), nameof(CaptureRequest)).MakeGenericMethod(typeof(T));
+        transport.Patch(send, prefix: new HarmonyMethod(capture));
+    }
+
+    private static bool CaptureRequest<T>(BackendRequestParams __0, ref Task<T> __result)
+    {
+        // Stop at the transport boundary. This test only inspects the outgoing request.
+        _outgoingRequest = __0;
+        __result = new TaskCompletionSource<T>().Task;
+        return false;
     }
 
     [Test]
-    public void SearchesPostTheFirstValueThenOnlyChangesAcrossViews()
+    public void QueuedEftSearchUsesItsOwnFilterRuleEvenAfterSwitchingViews()
     {
-        Search(EViewListType.AllOffers);
-        Search(EViewListType.WishList);
-        OpenView(EViewListType.WishList);
+        OpenView(EViewListType.AllOffers);
         Apply(true);
-        Search(EViewListType.WishList);
-        Search(EViewListType.WishList);
-        Search(EViewListType.AllOffers);
-
-        AssertPosts(false, true, false);
+        var flea = OpenView(EViewListType.WishList);
+        AccessTools.Field(typeof(RagFair), "_tradingSession").SetValue(flea, BackendSession());
+        var cache = AccessTools.Field(typeof(RagFair), "_cachedInfo");
+        cache.SetValue(flea, Activator.CreateInstance(cache.FieldType));
+        var hooks = new Harmony("net.liquidwarp.hidelockedflea.tests.search");
+        try
+        {
+            InterceptTransport<OffersList>(hooks);
+            hooks.Patch(AccessTools.Method(typeof(RagFair), nameof(RagFair.GetOffers)),
+                prefix: new HarmonyMethod(typeof(GetOffersPatch), nameof(GetOffersPatch.Prefix)),
+                finalizer: new HarmonyMethod(typeof(GetOffersPatch), nameof(GetOffersPatch.Finalizer)));
+            hooks.Patch(AccessTools.Method(typeof(LocalizationExtensions), nameof(LocalizationExtensions.Localized), [typeof(string), typeof(string)]),
+                prefix: new HarmonyMethod(typeof(FilterSettingsTests), nameof(SkipSceneOperation)));
+            var search = flea.GetOffers(false, new FilterRule { ViewListType = EViewListType.AllOffers, NeededSearchId = "test-item" });
+            if (search.IsFaulted)
+                search.GetAwaiter().GetResult();
+            Assert.That(_outgoingRequest?.BackendMethod, Is.EqualTo("/client/ragfair/find?hideLockedFlea=1"));
+            Assert.That(GetOffersPatch.HideLocked, Is.False, "EFT has dispatched the request and left the search scope");
+        }
+        finally
+        {
+            hooks.UnpatchSelf();
+            _outgoingRequest = null;
+        }
     }
 
     [TestCase(false)]
     [TestCase(true)]
-    public async Task CheckboxRequestControlsTheServerSearch(bool hideLocked)
+    public void EachSearchCarriesTheCheckboxThroughAFreshServerAndAnEftRetry(bool hideLocked)
     {
-        var market = new FleaMarket();
-        var locked = market.Offer(loyalty: 4);
-        var player = market.Offer(OfferCreator.Player);
         OpenView(EViewListType.AllOffers);
         Apply(hideLocked);
-        Search(EViewListType.AllOffers);
-
-        var (url, json) = _services.Requests.Single();
-        await market.Router.HandleStaticAsync(url, json, market.Session, "");
-        var visible = market.Search(market.Session, locked, player);
-
-        Assert.That(visible, Is.EqualTo(hideLocked ? new[] { player } : new[] { locked, player }));
+        var session = new SPTarkov.Server.Core.Models.Common.MongoId();
+        var accessor = new HttpContextAccessor();
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var request = Search(EViewListType.AllOffers);
+            if (attempt > 0)
+            {
+                request.IncreaseRetryIndex();
+                Assert.That(request.CurSelectedURLNamePath, Does.EndWith("?retry=1"));
+            }
+            var uri = new Uri("https://" + request.CurSelectedURLNamePath);
+            var context = new DefaultHttpContext();
+            context.Request.Path = uri.AbsolutePath;
+            context.Request.QueryString = QueryString.FromUriComponent(uri);
+            accessor.HttpContext = context;
+            try
+            {
+                var market = new FleaMarket(session);
+                var locked = market.Offer(loyalty: 4);
+                var player = market.Offer(OfferCreator.Player);
+                Assert.That(market.Search(session, locked, player),
+                    Is.EqualTo(hideLocked ? new[] { player } : new[] { locked, player }));
+            }
+            finally
+            {
+                accessor.HttpContext = null;
+            }
+        }
     }
 
     [Test]
-    public void ClearingRestoresSavedDefaultsAndResendsEvenWhenTheValueMatches()
+    public void CapturedRequestsKeepTheirViewWhenAnotherSearchStarts()
     {
-        var flea = OpenView(EViewListType.AllOffers);
+        OpenView(EViewListType.WishList);
         Apply(true);
-        SaveRuleAsDefaultPatch.Postfix(flea);
-        Search(EViewListType.AllOffers);
-        Apply(false);
-
-        ClearSavedFiltersPatch.Postfix();
-        Search(EViewListType.AllOffers);
-        Search(EViewListType.AllOffers);
-
-        AssertPosts(true, true);
+        var wishlist = Search(EViewListType.WishList);
+        var all = Search(EViewListType.AllOffers);
+        Assert.That(all.BackendMethod, Is.EqualTo("/client/ragfair/find?hideLockedFlea=0"));
+        Assert.That(wishlist.BackendMethod, Is.EqualTo("/client/ragfair/find?hideLockedFlea=1"));
     }
 
     [Test]
-    public void FailedPostsWarnAndRetryOnTheNextSearch()
+    public void OtherBackendRequestsKeepTheirOriginalPathAndParameters()
     {
-        Search(EViewListType.AllOffers);
         OpenView(EViewListType.AllOffers);
         Apply(true);
-        _services.RejectNextPost = true;
-        Search(EViewListType.AllOffers);
-        Assert.That(_services.Warnings, Has.One.Contains("Test connection failed"));
-
-        Search(EViewListType.AllOffers);
-        Search(EViewListType.AllOffers);
-        AssertPosts(false, true, true);
-    }
-
-    private void AssertPosts(params bool[] expected)
-    {
-        Assert.That(_services.Requests, Has.Count.EqualTo(expected.Length));
-        for (var index = 0; index < expected.Length; index++)
-        {
-            var (url, json) = _services.Requests[index];
-            Assert.That(url, Is.EqualTo("/hidelockedflea/settings"));
-            using var body = JsonDocument.Parse(json);
-            Assert.That(body.RootElement.GetProperty("hideLocked").GetBoolean(), Is.EqualTo(expected[index]));
-        }
+        var body = new object();
+        var request = BackendRequestParams.CreateFromLegacyParams(new SendRequest
+            { Url = "https://eft.test/client/ragfair/itemMarketPrice", Params = body });
+        Assert.That(request.BackendMethod, Is.EqualTo("/client/ragfair/itemMarketPrice"));
+        Assert.That(request.Params, Is.SameAs(body));
     }
 }

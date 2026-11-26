@@ -16,6 +16,9 @@
         <Reference Include="Assembly-CSharp">
             <HintPath>$(SPTPath)/EscapeFromTarkov_Data/Managed/Assembly-CSharp.dll</HintPath>
         </Reference>
+        <Reference Include="Comfort">
+            <HintPath>$(SPTPath)/EscapeFromTarkov_Data/Managed/Comfort.dll</HintPath>
+        </Reference>
         <Reference Include="Sirenix.Serialization">
             <HintPath>$(SPTPath)/EscapeFromTarkov_Data/Managed/Sirenix.Serialization.dll</HintPath>
         </Reference>

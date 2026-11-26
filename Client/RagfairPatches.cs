@@ -4,7 +4,6 @@ using System.Reflection;
 using EFT.UI;
 using EFT.UI.Ragfair;
 using HarmonyLib;
-using Newtonsoft.Json;
 using SPT.Reflection.Patching;
 
 namespace Liquidwarp.HideLockedFlea.Client;
@@ -37,30 +36,46 @@ internal static class HideLockedSetting
 
 public class GetOffersPatch : ModulePatch
 {
-    private static bool? _sentHideLocked;
-
-    public static void ResendNextSearch() => _sentHideLocked = null;
+    // EFT constructs the backend request before the first await in RagFair.GetOffers.
+    [ThreadStatic] internal static bool HideLocked;
 
     protected override MethodBase GetTargetMethod() =>
         AccessTools.Method(typeof(RagFair), nameof(RagFair.GetOffers), [typeof(bool), typeof(FilterRule)]);
 
     [PatchPrefix]
-    public static void Prefix(FilterRule filterRule)
+    public static void Prefix(FilterRule filterRule, out bool __state)
     {
-        var hideLocked = HideLockedSetting.Get(filterRule.ViewListType);
-        if (_sentHideLocked == hideLocked)
-            return;
+        __state = HideLocked;
+        HideLocked = HideLockedSetting.Get(filterRule.ViewListType);
+    }
 
-        try
+    [PatchFinalizer]
+    public static void Finalizer(bool __state) => HideLocked = __state;
+}
+
+public class FleaRequestPatch : ModulePatch
+{
+    protected override MethodBase GetTargetMethod() =>
+        AccessTools.Method(typeof(BackendRequestParams), nameof(BackendRequestParams.CreateFromLegacyParams));
+
+    [PatchPostfix]
+    public static void Postfix(BackendRequestParams __result)
+    {
+        bool hideLocked;
+        switch (__result.BackendMethod)
         {
-            FleaFilterServices.Current.PostJson("/hidelockedflea/settings", JsonConvert.SerializeObject(new { hideLocked }));
-            _sentHideLocked = hideLocked;
+            case "/client/ragfair/find":
+                hideLocked = GetOffersPatch.HideLocked;
+                break;
+            case "/client/ragfair/offer/findbyid":
+                // EFT switches to All Offers before looking up a numeric ID.
+                hideLocked = HideLockedSetting.Get(EViewListType.AllOffers);
+                break;
+            default:
+                return;
         }
-        catch (Exception ex)
-        {
-            // Not remembered as sent, so the next search tries again.
-            FleaFilterServices.Current.LogWarning($"Failed to send the setting to the server: {ex.Message}");
-        }
+
+        __result.BackendMethod += hideLocked ? "?hideLockedFlea=1" : "?hideLockedFlea=0";
     }
 }
 
@@ -79,11 +94,7 @@ public class ClearSavedFiltersPatch : ModulePatch
         AccessTools.Method(typeof(RagFair), nameof(RagFair.ClearSavedFilters));
 
     [PatchPostfix]
-    public static void Postfix()
-    {
-        HideLockedSetting.ClearCurrent();
-        GetOffersPatch.ResendNextSearch();
-    }
+    public static void Postfix() => HideLockedSetting.ClearCurrent();
 }
 
 public class FilterWindowAwakePatch : ModulePatch

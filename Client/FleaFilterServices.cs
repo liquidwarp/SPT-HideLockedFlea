@@ -1,5 +1,4 @@
 using EFT.UI;
-using SPT.Common.Http;
 using UnityEngine;
 
 namespace Liquidwarp.HideLockedFlea.Client;
@@ -15,10 +14,6 @@ internal class FleaFilterServices
         PlayerPrefs.SetInt(key, value);
         PlayerPrefs.Save();
     }
-
-    public virtual void PostJson(string url, string json) => RequestHandler.PostJson(url, json);
-
-    public virtual void LogWarning(string message) => Plugin.LogSource.LogWarning(message);
 
     public virtual UpdatableToggle DuplicateToggle(UpdatableToggle original, string name, string label)
     {

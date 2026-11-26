@@ -11,7 +11,7 @@ namespace Liquidwarp.HideLockedFlea.Server.Tests;
 internal sealed class FleaMarket
 {
     public const string SettingsUrl = "/hidelockedflea/settings";
-    public readonly MongoId Session = new();
+    public readonly MongoId Session;
     public readonly MongoId Trader = new();
     public readonly MongoId Template = new();
     public readonly TraderAssort Assort = new() { Items = [], BarterScheme = [], LoyalLevelItems = [] };
@@ -20,8 +20,9 @@ internal sealed class FleaMarket
     public readonly Dictionary<MongoId, TraderAssort> Assorts;
     public readonly SettingsRouter Router;
 
-    public FleaMarket()
+    public FleaMarket(MongoId? session = null)
     {
+        Session = session ?? new MongoId();
         Assorts = new() { [Trader] = Assort };
         Profile = new() { TradersInfo = new() { [Trader] = TraderInfo } };
         var json = new JsonUtil([new SptJsonConverterRegistrator()]);
@@ -52,13 +53,22 @@ internal sealed class FleaMarket
         };
     }
 
+    public Item AddQuestLockedChild(RagfairOffer offer)
+    {
+        var child = new Item { Id = new(), Template = new(), ParentId = offer.Root };
+        offer.Items!.Add(child);
+        Assort.BarterScheme[child.Id] = [[new()], [new() { SptQuestLocked = true }]];
+        return child;
+    }
+
     public List<RagfairOffer> Search(MongoId session, params RagfairOffer[] offers)
     {
         GetOffersPatch.Prefix(session);
         try
         {
             List<RagfairOffer> results = [.. offers];
-            GetOffersForSearchTypePatch.Postfix(Assorts, Profile, results);
+            GetOffersForSearchTypePatch.Postfix(Assorts, Profile);
+            AddIndexValueToOffersPatch.Postfix(results);
             return results;
         }
         finally

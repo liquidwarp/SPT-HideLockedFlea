@@ -1,22 +1,30 @@
+using System.Text.Json;
 using HarmonyLib;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
 using SPTarkov.DI;
 using SPTarkov.Reflection.Patching;
+using SPTarkov.Server.Core.Callbacks;
 using SPTarkov.Server.Core.Controllers;
 using SPTarkov.Server.Core.DI;
 using SPTarkov.Server.Core.Helpers.Commerce;
 using SPTarkov.Server.Core.Helpers.Profile;
 using SPTarkov.Server.Core.Helpers.Ragfair;
+using SPTarkov.Server.Core.Helpers.Traders;
 using SPTarkov.Server.Core.Models.Common;
 using SPTarkov.Server.Core.Models.Eft.Ragfair;
 using SPTarkov.Server.Core.Models.Enums;
 using SPTarkov.Server.Core.Models.Spt.Config;
 using SPTarkov.Server.Core.Models.Spt.Tables;
+using SPTarkov.Server.Core.Routers;
+using SPTarkov.Server.Core.Routers.Static;
 using SPTarkov.Server.Core.Servers;
+using SPTarkov.Server.Core.Services.Commerce;
 using SPTarkov.Server.Core.Services.Ragfair;
 using SPTarkov.Server.Core.Utils;
 using SPTarkov.Server.Core.Utils.Json;
+using SptCloner = SPTarkov.Server.Core.Utils.Cloners.FastCloner;
 
 namespace Liquidwarp.HideLockedFlea.Server.Tests;
 
@@ -25,6 +33,14 @@ public class SearchIntegrationTests
 {
     private AbstractPatch[] _patches = [];
     private readonly RagfairCategoriesService _categories = new(null!);
+    private readonly SaveServer _saves = SptService<SaveServer>();
+    private readonly TradersTable _traders = [];
+    private readonly RagfairConfig _fleaConfig = new()
+    {
+        Traders = [], TieredFlea = new() { UnlocksTpl = [], UnlocksType = [] }, RunIntervalValues = null!, Sell = null!, Dynamic = null!,
+    };
+    private ProfileHelper _profiles = null!;
+    private TraderAssortHelper _assorts = null!;
     private FleaMarket _market = null!;
 
     [OneTimeSetUp]
@@ -34,6 +50,13 @@ public class SearchIntegrationTests
         var json = new JsonUtil([new SptJsonConverterRegistrator()]);
         services.AddSingleton(json);
         services.AddSingleton(new HttpResponseUtil(json, null!));
+        _profiles = SptService<ProfileHelper>(_saves);
+        _assorts = SptService<TraderAssortHelper>(_traders, _profiles, new SptCloner(), SptService<AssortHelper>(),
+            SptService<TraderPurchasePersisterService>(_profiles));
+        services.AddSingleton(_profiles);
+        services.AddSingleton(_assorts);
+        services.AddSingleton(_traders);
+        services.AddSingleton(_fleaConfig);
         var injection = new DependencyInjectionHandler(services);
         injection.AddInjectableTypesFromAssembly(typeof(Mod).Assembly);
         injection.InjectAll();
@@ -42,7 +65,8 @@ public class SearchIntegrationTests
         _patches = provider.GetServices<IRuntimePatch>().Cast<AbstractPatch>().ToArray();
         Assert.That(_patches.Select(patch => patch.GetType()), Is.EquivalentTo(new[]
         {
-            typeof(GetOffersPatch), typeof(GetOffersForSearchTypePatch), typeof(GetCategoriesFromOffersPatch),
+            typeof(GetOffersPatch), typeof(GetOffersForSearchTypePatch), typeof(GetCategoriesFromOffersPatch), typeof(GetOfferByInternalIdPatch),
+            typeof(AddIndexValueToOffersPatch),
         }));
         await provider.GetRequiredService<IOnLoad>().OnLoadAsync(CancellationToken.None);
         Assert.That(_patches.All(patch => Harmony.HasAnyPatches(patch.HarmonyId)), Is.True);
@@ -57,7 +81,12 @@ public class SearchIntegrationTests
     }
 
     [SetUp]
-    public void NewMarket() => _market = new();
+    public void NewMarket()
+    {
+        _market = new();
+        _traders.Clear();
+        _fleaConfig.Traders.Clear();
+    }
 
     [Test]
     public async Task SettingsRouteControlsOnlyTheRequestingProfile()
@@ -68,7 +97,7 @@ public class SearchIntegrationTests
         Assert.That(_market.Search(_market.Session, locked), Has.Count.EqualTo(1));
 
         var response = await _market.SetFilter(_market.Session, true);
-        using var body = System.Text.Json.JsonDocument.Parse((string)response);
+        using var body = JsonDocument.Parse((string)response);
         Assert.That(body.RootElement.GetProperty("err").GetInt32(), Is.Zero);
         Assert.That(_market.Search(_market.Session, locked), Is.Empty);
         Assert.That(_market.Search(other, locked), Has.Count.EqualTo(1));
@@ -85,7 +114,8 @@ public class SearchIntegrationTests
         var player = _market.Offer(OfferCreator.Player);
         var buyable = _market.Offer();
         var locked = _market.Offer(loyalty: 4);
-        var lockedOnly = _market.Offer(loyalty: 4, template: new MongoId());
+        var lockedOnly = _market.Offer(template: new MongoId());
+        _market.AddQuestLockedChild(lockedOnly);
         RagfairOffer[] globalPool = [player, lockedOnly, locked, buyable];
         var request = new SearchRequestData();
         await _market.SetFilter(_market.Session, true);
@@ -94,11 +124,12 @@ public class SearchIntegrationTests
         {
             // An ordinary search can return one template while SPT counts the entire market.
             List<RagfairOffer> results = [locked, buyable, player];
-            GetOffersForSearchTypePatch.Postfix(_market.Assorts, _market.Profile, results);
-            Assert.That(results, Is.EqualTo(new[] { buyable, player }));
+            GetOffersForSearchTypePatch.Postfix(_market.Assorts, _market.Profile);
             var counts = _categories.GetCategoriesFromOffers(globalPool, request, true);
             Assert.That(counts, Has.Count.EqualTo(1));
             Assert.That(counts[_market.Template], Is.EqualTo(2));
+            AddIndexValueToOffersPatch.Postfix(results);
+            Assert.That(results, Is.EqualTo(new[] { buyable, player }));
 
             request.OfferOwnerType = OfferOwnerType.TraderOwnerType;
             Assert.That(_categories.GetCategoriesFromOffers(globalPool, request, true)[_market.Template], Is.EqualTo(1));
@@ -122,7 +153,7 @@ public class SearchIntegrationTests
         GetOffersPatch.Prefix(_market.Session);
         try
         {
-            GetOffersForSearchTypePatch.Postfix(_market.Assorts, _market.Profile, [offer]);
+            GetOffersForSearchTypePatch.Postfix(_market.Assorts, _market.Profile);
             var otherCounts = Task.Factory.StartNew(() =>
             {
                 var before = _categories.GetCategoriesFromOffers([offer], new(), true);
@@ -133,7 +164,7 @@ public class SearchIntegrationTests
             Assert.That(otherCounts, Is.EqualTo((1, 1)));
             Assert.That(_categories.GetCategoriesFromOffers([offer], new(), true), Is.Empty);
             List<RagfairOffer> ownResults = [offer];
-            GetOffersForSearchTypePatch.Postfix(_market.Assorts, _market.Profile, ownResults);
+            AddIndexValueToOffersPatch.Postfix(ownResults);
             Assert.That(ownResults, Is.Empty);
         }
         finally
@@ -159,6 +190,116 @@ public class SearchIntegrationTests
         Assert.That(filtered.Offers, Is.Empty);
         Assert.That(filtered.Categories, Has.Count.EqualTo(1));
         Assert.That(filtered.Categories![_market.Template], Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task OverlappingRequestsForOneProfileUseTheirOwnCheckbox()
+    {
+        RegisterTrader();
+        var locked = _market.Offer(loyalty: 4);
+        var requiredItem = new MongoId();
+        var controller = CreateController(requiredItem, locked, _market.Offer(OfferCreator.Player));
+        await _market.SetFilter(_market.Session, true);
+        async Task<int> CountOffers(string query)
+        {
+            var context = new DefaultHttpContext();
+            context.Request.QueryString = new QueryString(query);
+            var accessor = new HttpContextAccessor { HttpContext = context };
+            try
+            {
+                await Task.Yield();
+                var request = new SearchRequestData { NeededSearchId = requiredItem, BuildCount = 0, Limit = 15 };
+                return controller.GetOffers(_market.Session, request).Offers!.Count;
+            }
+            finally
+            {
+                accessor.HttpContext = null;
+            }
+        }
+
+        var counts = await Task.WhenAll(CountOffers("?hideLockedFlea=0"), CountOffers("?hideLockedFlea=1"));
+        Assert.That(counts, Is.EqualTo(new[] { 2, 1 }));
+        Assert.That(_market.Search(_market.Session, locked), Is.Empty);
+    }
+
+    [Test]
+    public async Task ExactOfferIdHonorsTheFilterAndLeavesOtherOffersInTheMarket()
+    {
+        var locked = _market.Offer(loyalty: 4);
+        var player = _market.Offer(OfferCreator.Player);
+        locked.InternalId = 51;
+        player.InternalId = 52;
+        var controller = CreateController(new MongoId(), locked, player);
+        var lookup = new GetRagfairOfferByIdRequest { Id = locked.InternalId };
+        Assert.That(controller.GetOfferByInternalId(_market.Session, lookup), Is.SameAs(locked));
+
+        await _market.SetFilter(_market.Session, true);
+        Assert.That(controller.GetOfferByInternalId(_market.Session, lookup), Is.Null);
+        Assert.That(controller.GetOfferByInternalId(_market.Session, new() { Id = player.InternalId }), Is.SameAs(player));
+        Assert.That(controller.GetOfferByInternalId(_market.Session, new() { Id = 999 }), Is.Null);
+        await _market.SetFilter(_market.Session, false);
+        Assert.That(controller.GetOfferByInternalId(_market.Session, lookup), Is.SameAs(locked));
+    }
+
+    [Test]
+    public async Task TheNumberShownOnAFilteredPageStillFindsTheVisibleOffer()
+    {
+        RegisterTrader();
+        var locked = _market.Offer(loyalty: 4);
+        var player = _market.Offer(OfferCreator.Player);
+        var requiredItem = new MongoId();
+        var controller = CreateController(requiredItem, locked, player);
+        var request = new SearchRequestData { NeededSearchId = requiredItem, BuildCount = 0, Limit = 15 };
+
+        var unfiltered = controller.GetOffers(_market.Session, request).Offers!;
+        var playerNumber = unfiltered.Single(offer => offer.Id == player.Id).InternalId;
+        await _market.SetFilter(_market.Session, true);
+        var visible = controller.GetOffers(_market.Session, request).Offers!.Single();
+        Assert.That(visible.Id, Is.EqualTo(player.Id));
+        Assert.That(visible.InternalId, Is.EqualTo(playerNumber));
+        var lookup = controller.GetOfferByInternalId(_market.Session, new() { Id = visible.InternalId });
+        Assert.That(lookup?.Id, Is.EqualTo(player.Id));
+    }
+
+    [Test]
+    public async Task StockFleaRouteTreatsAHiddenIdLikeAMissingIdAndReturnsItWhenUnlocked()
+    {
+        RegisterTrader();
+        var bundle = _market.Offer();
+        bundle.InternalId = 72;
+        _market.AddQuestLockedChild(bundle);
+        var controller = CreateController(new MongoId(), bundle);
+        var json = new JsonUtil([new SptJsonConverterRegistrator()]);
+        var callbacks = SptService<RagfairCallbacks>(controller, new HttpResponseUtil(json, null!));
+        var router = new HttpRouter([new RagfairStaticRouter(json, callbacks)], []);
+
+        async Task<JsonElement> Lookup(int id, bool enabled)
+        {
+            var context = new DefaultHttpContext();
+            context.Request.Path = "/client/ragfair/offer/findbyid";
+            context.Request.QueryString = new QueryString(enabled ? "?hideLockedFlea=1" : "?hideLockedFlea=0");
+            var accessor = new HttpContextAccessor { HttpContext = context };
+            try
+            {
+                Assert.That(router.CanHandle(context), Is.True);
+                var response = await router.GetResponseObjectAsync(context.Request, _market.Session, $$"""{"id":{{id}}}""");
+                using var envelope = JsonDocument.Parse((string)response!);
+                return envelope.RootElement.Clone();
+            }
+            finally
+            {
+                accessor.HttpContext = null;
+            }
+        }
+
+        var missing = await Lookup(999, true);
+        var hidden = await Lookup(72, true);
+        Assert.That(hidden.GetRawText(), Is.EqualTo(missing.GetRawText()));
+        Assert.That((await Lookup(72, false)).GetProperty("data").GetProperty("intId").GetInt32(), Is.EqualTo(72));
+        _market.Assort.BarterScheme.Clear();
+        Assert.That((await Lookup(72, true)).GetProperty("data").GetProperty("intId").GetInt32(), Is.EqualTo(72));
+        _market.TraderInfo.Disabled = true;
+        Assert.That((await Lookup(72, true)).GetRawText(), Is.EqualTo(missing.GetRawText()));
     }
 
     [Test]
@@ -219,11 +360,18 @@ public class SearchIntegrationTests
 
         Assert.That(_categories.GetCategoriesFromOffers([locked], new(), true), Has.Count.EqualTo(1));
         List<RagfairOffer> results = [locked];
-        GetOffersForSearchTypePatch.Postfix(_market.Assorts, _market.Profile, results);
+        GetOffersForSearchTypePatch.Postfix(_market.Assorts, _market.Profile);
+        AddIndexValueToOffersPatch.Postfix(results);
         Assert.That(results, Is.EqualTo(new[] { locked }));
     }
 
     private static void InterruptSort() => throw new OperationCanceledException("Interrupted test search");
+
+    private void RegisterTrader()
+    {
+        _traders[_market.Trader] = new() { Base = new(), Assort = _market.Assort, Dialogue = [], QuestAssort = [] };
+        _fleaConfig.Traders[_market.Trader] = true;
+    }
 
     private RagfairController CreateController(MongoId requiredItem, params RagfairOffer[] offers)
     {
@@ -234,19 +382,17 @@ public class SearchIntegrationTests
                 EventType = [], ArenaEftTransferSettings = null! },
             BotPresets = [], BotWeaponScatterings = [], ItemPresets = [], LocationInfection = [],
         };
-        var fleaConfig = new RagfairConfig
-        {
-            Traders = [], TieredFlea = new() { UnlocksTpl = [], UnlocksType = [] }, RunIntervalValues = null!, Sell = null!, Dynamic = null!,
-        };
         var payment = new PaymentHelper(new InventoryConfig
         {
             CustomMoneyTpls = [], DeprioritisedMoneyContainers = [], SkillGainMultipliers = [], RandomLootContainers = [],
             SealedAirdropContainer = null!,
         });
-        var saves = SptService<SaveServer>();
         _market.Profile.Info = new() { Level = 20 };
-        saves.AddProfile(new() { ProfileInfo = new() { ProfileId = _market.Session }, CharacterData = new() { PmcData = _market.Profile } });
-        var profiles = SptService<ProfileHelper>(saves);
+        _saves.AddProfile(new()
+        {
+            ProfileInfo = new() { ProfileId = _market.Session }, CharacterData = new() { PmcData = _market.Profile },
+            SptData = new(), TraderPurchases = [],
+        });
 
         var holder = SptService<RagfairOfferHolder>();
         for (var index = 0; index < offers.Length; index++)
@@ -258,9 +404,10 @@ public class SearchIntegrationTests
         }
         var offerService = SptService<RagfairOfferService>(holder);
         var requiredItems = new RagfairRequiredItemsService(offerService, payment);
-        var offerHelper = SptService<RagfairOfferHelper>(globals, fleaConfig, offerService, requiredItems, new TimeUtil());
-        var fleaHelper = SptService<RagfairHelper>(new TradersTable(), fleaConfig);
-        return SptService<RagfairController>(globals, profiles, fleaHelper, new RagfairSortHelper(null!), offerHelper, offerService, _categories);
+        var offerHelper = SptService<RagfairOfferHelper>(globals, _fleaConfig, offerService, requiredItems, new TimeUtil());
+        var fleaHelper = SptService<RagfairHelper>(_traders, _fleaConfig, _assorts);
+        return SptService<RagfairController>(globals, _profiles, fleaHelper, new RagfairSortHelper(null!), offerHelper, offerService,
+            _categories, SptService<TraderHelper>(_traders));
     }
 
     // SPT services take dependencies for many unrelated operations. Supply only those used by this search.

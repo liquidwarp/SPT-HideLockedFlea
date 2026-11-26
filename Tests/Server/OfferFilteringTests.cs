@@ -56,6 +56,32 @@ public class OfferFilteringTests
     }
 
     [Test]
+    public void AQuestLockedChildHidesTheWholeBundleUntilTheQuestUnlocks()
+    {
+        var bundle = _market.Offer();
+        var child = _market.AddQuestLockedChild(bundle);
+
+        Assert.That(_market.Search(_market.Session, bundle), Is.Empty);
+        _market.Assort.BarterScheme.Remove(child.Id);
+        Assert.That(_market.Search(_market.Session, bundle), Is.EqualTo(new[] { bundle }));
+    }
+
+    [Test]
+    public void OverlappingAssortIdsCannotUnlockOrQuestLockAnotherSellersOffer()
+    {
+        var other = new FleaMarket();
+        _market.Assorts.Add(other.Trader, other.Assort);
+        var offer = _market.Offer();
+        other.Assort.Items.Add(offer.Items![0]);
+        other.Assort.BarterScheme[offer.Root] = [[new() { SptQuestLocked = true }]];
+
+        Assert.That(_market.Search(_market.Session, offer), Is.EqualTo(new[] { offer }));
+        _market.Assort.Items.Clear();
+        other.Assort.BarterScheme.Clear();
+        Assert.That(_market.Search(_market.Session, offer), Is.Empty);
+    }
+
+    [Test]
     public void TwoTradersSellingTheSameItemUseTheirOwnLoyaltyLevels()
     {
         var second = new FleaMarket();

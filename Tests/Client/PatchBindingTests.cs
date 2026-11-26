@@ -8,13 +8,14 @@ namespace Liquidwarp.HideLockedFlea.Client.Tests;
 public class PatchBindingTests
 {
     [TestCase(typeof(GetOffersPatch), typeof(RagFair), nameof(RagFair.GetOffers), "Prefix", new[] { typeof(bool), typeof(FilterRule) })]
+    [TestCase(typeof(FleaRequestPatch), typeof(BackendRequestParams), nameof(BackendRequestParams.CreateFromLegacyParams), "Postfix", new[] { typeof(SendRequest) })]
     [TestCase(typeof(SaveRuleAsDefaultPatch), typeof(RagFair), nameof(RagFair.SaveRuleAsDefault), "Postfix", new Type[0])]
     [TestCase(typeof(ClearSavedFiltersPatch), typeof(RagFair), nameof(RagFair.ClearSavedFilters), "Postfix", new Type[0])]
     [TestCase(typeof(FilterWindowAwakePatch), typeof(RagfairFilterWindow), nameof(RagfairFilterWindow.Awake), "Prefix", new Type[0])]
     [TestCase(typeof(FilterWindowShowPatch), typeof(RagfairFilterWindow), nameof(RagfairFilterWindow.Show), "Postfix", new[] { typeof(RagFair) })]
     public void ResolvesTheEftMethodAndItsInjectedArguments(Type patchType, Type owner, string method, string hook, Type[] arguments)
     {
-        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
         var patch = RuntimeHelpers.GetUninitializedObject(patchType);
         var target = (MethodInfo?)patchType.GetMethod("GetTargetMethod", flags)!.Invoke(patch, null);
         Assert.That(target, Is.Not.Null);
@@ -28,6 +29,8 @@ public class PatchBindingTests
             var injectedType = name switch
             {
                 "__instance" => owner,
+                "__result" => target!.ReturnType,
+                "__state" => typeof(bool).MakeByRefType(),
                 _ when name.StartsWith("___") => owner.GetField(name[3..], flags)?.FieldType,
                 _ => target!.GetParameters().SingleOrDefault(arg => arg.Name == name)?.ParameterType,
             };
